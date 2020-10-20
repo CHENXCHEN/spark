@@ -79,7 +79,7 @@ public class YarnShuffleService extends AuxiliaryService {
   private static final Logger logger = LoggerFactory.getLogger(YarnShuffleService.class);
 
   // Port on which the shuffle server listens for fetch requests
-  private static final String SPARK_SHUFFLE_SERVICE_PORT_KEY = "spark.shuffle.service.port";
+  private static final String SPARK_SHUFFLE_SERVICE_PORT_KEY = "spark3.shuffle.service.port";
   private static final int DEFAULT_SPARK_SHUFFLE_SERVICE_PORT = 7337;
 
   // Whether the shuffle server should authenticate fetch requests
@@ -138,7 +138,7 @@ public class YarnShuffleService extends AuxiliaryService {
   private DB db;
 
   public YarnShuffleService() {
-    super("spark_shuffle");
+    super("spark3_shuffle");
     logger.info("Initializing YARN shuffle service for Spark");
     instance = this;
   }
