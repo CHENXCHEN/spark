@@ -17,13 +17,12 @@
 
 package org.apache.spark.sql.execution.datasources
 
-import java.io.{BufferedReader, InputStreamReader, IOException}
+import java.io.{BufferedReader, IOException, InputStreamReader}
 import java.nio.charset.StandardCharsets.UTF_8
 
 import scala.collection.JavaConverters._
-
 import com.google.common.io.CharStreams
-import org.apache.hadoop.fs.{FileSystem, Path}
+import org.apache.hadoop.fs.{FileSystem, Path, PathFilter}
 
 object SymlinkTextInputFormatUtil {
 
@@ -36,23 +35,26 @@ object SymlinkTextInputFormatUtil {
       fileSystem: FileSystem,
       symlinkDir: Path): Seq[Path] = {
 
-    val symlinkIterator = fileSystem.listFiles(symlinkDir, true)
-    var targetPaths = Seq[Path]()
+    val symlinks = fileSystem.listStatus(symlinkDir, new PathFilter() {
+      override def accept(p: Path): Boolean = {
+        val name = p.getName
+        !name.startsWith("_") && !name.startsWith(".")
+      }
+    })
 
-    while (symlinkIterator.hasNext) {
-      val fileStatus = symlinkIterator.next()
-      if (fileStatus.isFile) {
+    symlinks.flatMap {
+      case fileStatus if fileStatus.isFile =>
         val reader = new BufferedReader(
           new InputStreamReader(fileSystem.open(fileStatus.getPath), UTF_8))
         try {
-          val targets: Seq[Path] = CharStreams.readLines(reader).asScala.
-            map(symlinkStr => new Path(symlinkStr))
-          targetPaths = targetPaths ++ targets
+          CharStreams.readLines(reader).asScala
+              .map(symlinkStr => new Path(symlinkStr))
         } finally {
-          reader.close
+          reader.close()
+          Seq.empty
         }
-      }
+      case _ =>
+        Seq.empty
     }
-    targetPaths
   }
 }
