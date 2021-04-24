@@ -33,7 +33,7 @@ import org.apache.spark.sql.catalyst.expressions.aggregate._
 import org.apache.spark.sql.catalyst.plans.logical._
 import org.apache.spark.sql.catalyst.util.{ArrayData, GenericArrayData}
 import org.apache.spark.sql.execution.QueryExecution
-import org.apache.spark.sql.execution.datasources.{DataSourceUtils, InMemoryFileIndex}
+import org.apache.spark.sql.execution.datasources.{DataSourceUtils, InMemoryFileIndex, SymlinkTextInputFormatUtil}
 import org.apache.spark.sql.internal.{SessionState, SQLConf}
 import org.apache.spark.sql.types._
 
@@ -70,15 +70,16 @@ object CommandUtils extends Logging {
   def calculateTotalSize(spark: SparkSession, catalogTable: CatalogTable): BigInt = {
     val sessionState = spark.sessionState
     val startTime = System.nanoTime()
+    val isSymlinkTextFormat = SymlinkTextInputFormatUtil.isSymlinkTextFormat(catalogTable)
     val totalSize = if (catalogTable.partitionColumnNames.isEmpty) {
       calculateSingleLocationSize(sessionState, catalogTable.identifier,
-        catalogTable.storage.locationUri)
+        catalogTable.storage.locationUri, isSymlinkTextFormat)
     } else {
       // Calculate table size as a sum of the visible partitions. See SPARK-21079
       val partitions = sessionState.catalog.listPartitions(catalogTable.identifier)
       logInfo(s"Starting to calculate sizes for ${partitions.length} partitions.")
       val paths = partitions.map(_.storage.locationUri)
-      calculateTotalLocationSize(spark, catalogTable.identifier, paths)
+      calculateTotalLocationSize(spark, catalogTable.identifier, paths, isSymlinkTextFormat)
     }
     logInfo(s"It took ${(System.nanoTime() - startTime) / (1000 * 1000)} ms to calculate" +
       s" the total size for table ${catalogTable.identifier}.")
@@ -88,7 +89,8 @@ object CommandUtils extends Logging {
   def calculateSingleLocationSize(
       sessionState: SessionState,
       identifier: TableIdentifier,
-      locationUri: Option[URI]): Long = {
+      locationUri: Option[URI],
+      isSymlinkTextFormat: Boolean): Long = {
     // This method is mainly based on
     // org.apache.hadoop.hive.ql.stats.StatsUtils.getFileSizeForTable(HiveConf, Table)
     // in Hive 0.13 (except that we do not use fs.getContentSummary).
@@ -99,13 +101,17 @@ object CommandUtils extends Logging {
     // countFileSize to count the table size.
     val stagingDir = sessionState.conf.getConfString("hive.exec.stagingdir", ".hive-staging")
 
-    def getPathSize(fs: FileSystem, path: Path): Long = {
+    // get real data size if table is symlink text format
+    def getPathSize(fs: FileSystem, path: Path, isSymlinkTextFormat: Boolean): Long = {
       val fileStatus = fs.getFileStatus(path)
       val size = if (fileStatus.isDirectory) {
         fs.listStatus(path)
           .map { status =>
             if (isDataPath(status.getPath, stagingDir)) {
-              getPathSize(fs, status.getPath)
+              if (isSymlinkTextFormat) {
+                SymlinkTextInputFormatUtil.getTargetPathsFromSymlink(fs, status.getPath)
+                  .map(dPath => getPathSize(fs, dPath, isSymlinkTextFormat = false)).sum
+              } else getPathSize(fs, status.getPath, isSymlinkTextFormat)
             } else {
               0L
             }
@@ -122,7 +128,7 @@ object CommandUtils extends Logging {
       val path = new Path(p)
       try {
         val fs = path.getFileSystem(sessionState.newHadoopConf())
-        getPathSize(fs, path)
+        getPathSize(fs, path, isSymlinkTextFormat)
       } catch {
         case NonFatal(e) =>
           logWarning(
@@ -140,11 +146,14 @@ object CommandUtils extends Logging {
   def calculateTotalLocationSize(
       sparkSession: SparkSession,
       tid: TableIdentifier,
-      paths: Seq[Option[URI]]): Long = {
+      paths: Seq[Option[URI]],
+      isSymlinkTextFormat: Boolean): Long = {
     if (sparkSession.sessionState.conf.parallelFileListingInStatsComputation) {
-      calculateLocationSizeParallel(sparkSession, paths.map(_.map(new Path(_))))
+      calculateLocationSizeParallel(sparkSession, paths.map(_.map(new Path(_))),
+        isSymlinkTextFormat)
     } else {
-      paths.map(p => calculateSingleLocationSize(sparkSession.sessionState, tid, p)).sum
+      paths.map(p => calculateSingleLocationSize(sparkSession.sessionState, tid, p,
+        isSymlinkTextFormat)).sum
     }
   }
 
@@ -157,12 +166,15 @@ object CommandUtils extends Logging {
    */
   def calculateLocationSizeParallel(
       sparkSession: SparkSession,
-      paths: Seq[Option[Path]]): Long = {
+      paths: Seq[Option[Path]],
+      isSymlinkTextFormat: Boolean = false): Long = {
     val stagingDir = sparkSession.sessionState.conf
       .getConfString("hive.exec.stagingdir", ".hive-staging")
     val filter = new PathFilterIgnoreNonData(stagingDir)
+    // get real data paths if table is symlink text format
     val sizes = InMemoryFileIndex.bulkListLeafFiles(paths.flatten,
-      sparkSession.sessionState.newHadoopConf(), filter, sparkSession, areRootPaths = true).map {
+      sparkSession.sessionState.newHadoopConf(), filter, sparkSession, areRootPaths = true
+      , isSymlinkTextFormat).map {
       case (_, files) => files.map(_.getLen).sum
     }
     // the size is 0 where paths(i) is not defined and sizes(i) where it is defined

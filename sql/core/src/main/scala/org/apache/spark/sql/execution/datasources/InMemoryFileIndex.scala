@@ -132,7 +132,8 @@ class InMemoryFileIndex(
     }
     val filter = FileInputFormat.getInputPathFilter(new JobConf(hadoopConf, this.getClass))
     val discovered = InMemoryFileIndex.bulkListLeafFiles(
-      pathsToFetch, hadoopConf, filter, sparkSession, areRootPaths = true)
+      pathsToFetch, hadoopConf, filter, sparkSession, areRootPaths = true,
+      isSymlinkTextFormat = false)
     discovered.foreach { case (path, leafFiles) =>
       HiveCatalogMetrics.incrementFilesDiscovered(leafFiles.size)
       fileStatusCache.putLeafFiles(path, leafFiles.toArray)
@@ -177,7 +178,8 @@ object InMemoryFileIndex extends Logging {
       hadoopConf: Configuration,
       filter: PathFilter,
       sparkSession: SparkSession,
-      areRootPaths: Boolean): Seq[(Path, Seq[FileStatus])] = {
+      areRootPaths: Boolean,
+      isSymlinkTextFormat: Boolean): Seq[(Path, Seq[FileStatus])] = {
 
     val ignoreMissingFiles = sparkSession.sessionState.conf.ignoreMissingFiles
     val ignoreLocality = sparkSession.sessionState.conf.ignoreDataLocality
@@ -192,7 +194,8 @@ object InMemoryFileIndex extends Logging {
           Some(sparkSession),
           ignoreMissingFiles = ignoreMissingFiles,
           ignoreLocality = ignoreLocality,
-          isRootPath = areRootPaths)
+          isRootPath = areRootPaths,
+          isSymlinkTextFormat = isSymlinkTextFormat)
         (path, leafFiles)
       }
     }
@@ -234,7 +237,8 @@ object InMemoryFileIndex extends Logging {
               None,
               ignoreMissingFiles = ignoreMissingFiles,
               ignoreLocality = ignoreLocality,
-              isRootPath = areRootPaths)
+              isRootPath = areRootPaths,
+              isSymlinkTextFormat)
             (path, leafFiles)
           }.iterator
         }.map { case (path, statuses) =>
@@ -301,7 +305,8 @@ object InMemoryFileIndex extends Logging {
       sessionOpt: Option[SparkSession],
       ignoreMissingFiles: Boolean,
       ignoreLocality: Boolean,
-      isRootPath: Boolean): Seq[FileStatus] = {
+      isRootPath: Boolean,
+      isSymlinkTextFormat: Boolean): Seq[FileStatus] = {
     logTrace(s"Listing $path")
     val fs = path.getFileSystem(hadoopConf)
 
@@ -357,7 +362,8 @@ object InMemoryFileIndex extends Logging {
             hadoopConf,
             filter,
             session,
-            areRootPaths = false
+            areRootPaths = false,
+            isSymlinkTextFormat
           ).flatMap(_._2)
         case _ =>
           dirs.flatMap { dir =>
@@ -368,7 +374,8 @@ object InMemoryFileIndex extends Logging {
               sessionOpt,
               ignoreMissingFiles = ignoreMissingFiles,
               ignoreLocality = ignoreLocality,
-              isRootPath = false)
+              isRootPath = false,
+              isSymlinkTextFormat)
           }
       }
       val allFiles = topLevelFiles ++ nestedFiles
@@ -424,7 +431,15 @@ object InMemoryFileIndex extends Logging {
         s"the following files were missing during file scan:\n  ${missingFiles.mkString("\n  ")}")
     }
 
-    resolvedLeafStatuses
+    val realDataLeafStatus = if (isRootPath && isSymlinkTextFormat) {
+      resolvedLeafStatuses.flatMap { resolvedLeafStatus =>
+        SymlinkTextInputFormatUtil.getTargetPathsFromSymlink(fs, resolvedLeafStatus.getPath)
+      }.flatMap { dPath =>
+        fs.listStatus(dPath)
+      }
+    } else resolvedLeafStatuses
+
+    realDataLeafStatus
   }
 
   /** Checks if we should filter out this path name. */

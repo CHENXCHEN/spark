@@ -23,7 +23,7 @@ import org.apache.spark.sql.catalyst.analysis.{NoSuchPartitionException, Unresol
 import org.apache.spark.sql.catalyst.catalog.{CatalogTable, CatalogTableType, ExternalCatalogUtils}
 import org.apache.spark.sql.catalyst.catalog.CatalogTypes.TablePartitionSpec
 import org.apache.spark.sql.catalyst.expressions.{And, EqualTo, Literal}
-import org.apache.spark.sql.execution.datasources.PartitioningUtils
+import org.apache.spark.sql.execution.datasources.{PartitioningUtils, SymlinkTextInputFormatUtil}
 
 /**
  * Analyzes a given set of partitions to generate per-partition statistics, which will be used in
@@ -108,7 +108,8 @@ case class AnalyzePartitionCommand(
     // recorded in the metastore.
     val newPartitions = partitions.flatMap { p =>
       val newTotalSize = CommandUtils.calculateSingleLocationSize(
-        sessionState, tableMeta.identifier, p.storage.locationUri)
+        sessionState, tableMeta.identifier, p.storage.locationUri,
+        SymlinkTextInputFormatUtil.isSymlinkTextFormat(tableMeta))
       val newRowCount = rowCounts.get(p.spec)
       val newStats = CommandUtils.compareAndGetNewStats(p.stats, newTotalSize, newRowCount)
       newStats.map(_ => p.copy(stats = newStats))

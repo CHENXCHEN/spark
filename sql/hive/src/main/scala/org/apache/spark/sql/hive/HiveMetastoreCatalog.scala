@@ -166,10 +166,10 @@ private[hive] class HiveMetastoreCatalog(sparkSession: SparkSession) extends Log
     val lazyPruningEnabled = sparkSession.sqlContext.conf.manageFilesourcePartitions
     val tablePath = new Path(relation.tableMeta.location)
     val fileFormat = fileFormatClass.getConstructor().newInstance()
-    val inputFormat = relation.tableMeta.storage.inputFormat.getOrElse("")
     val fs = tablePath.getFileSystem(sparkSession.sparkContext.hadoopConfiguration)
+    val isSymlinkTextFormat = SymlinkTextInputFormatUtil.isSymlinkTextFormat(relation.tableMeta)
 
-    val symlinkTargets = if (SymlinkTextInputFormatUtil.isSymlinkTextFormat(inputFormat)) {
+    val symlinkTargets = if (isSymlinkTextFormat) {
       SymlinkTextInputFormatUtil.getTargetPathsFromSymlink(fs, tablePath)
     } else {
       Nil
@@ -178,7 +178,7 @@ private[hive] class HiveMetastoreCatalog(sparkSession: SparkSession) extends Log
     val result = if (relation.isPartitioned) {
       val partitionSchema = relation.tableMeta.partitionSchema
       val rootPaths: Seq[Path] = if (lazyPruningEnabled) {
-        if (SymlinkTextInputFormatUtil.isSymlinkTextFormat(inputFormat)) {
+        if (isSymlinkTextFormat) {
           symlinkTargets
         } else {
           Seq(tablePath)
@@ -195,7 +195,7 @@ private[hive] class HiveMetastoreCatalog(sparkSession: SparkSession) extends Log
 
         if (paths.isEmpty) {
           Seq(tablePath)
-        } else if (SymlinkTextInputFormatUtil.isSymlinkTextFormat(inputFormat)) {
+        } else if (isSymlinkTextFormat) {
           paths.flatMap(path => SymlinkTextInputFormatUtil.getTargetPathsFromSymlink(fs, path))
         } else {
           paths
@@ -241,7 +241,7 @@ private[hive] class HiveMetastoreCatalog(sparkSession: SparkSession) extends Log
         logicalRelation
       })
     } else {
-      val rootPaths = if (SymlinkTextInputFormatUtil.isSymlinkTextFormat(inputFormat)) {
+      val rootPaths = if (isSymlinkTextFormat) {
         symlinkTargets
       } else {
         Seq(tablePath)

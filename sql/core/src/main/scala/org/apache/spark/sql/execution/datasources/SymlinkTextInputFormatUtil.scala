@@ -17,17 +17,24 @@
 
 package org.apache.spark.sql.execution.datasources
 
-import java.io.{BufferedReader, IOException, InputStreamReader}
+import java.io.{BufferedReader, InputStreamReader}
 import java.nio.charset.StandardCharsets.UTF_8
 
 import scala.collection.JavaConverters._
+
 import com.google.common.io.CharStreams
 import org.apache.hadoop.fs.{FileSystem, Path, PathFilter}
+
+import org.apache.spark.sql.catalyst.catalog.CatalogTable
 
 object SymlinkTextInputFormatUtil {
 
   def isSymlinkTextFormat(inputFormat: String): Boolean = {
     inputFormat.equals("org.apache.hadoop.hive.ql.io.SymlinkTextInputFormat")
+  }
+
+  def isSymlinkTextFormat(catalogTable: CatalogTable): Boolean = {
+    catalogTable.storage.inputFormat.exists(isSymlinkTextFormat)
   }
 
   // Mostly copied from SymlinkTextInputFormat#getTargetPathsFromSymlinksDirs of Hive 3.1
@@ -36,10 +43,7 @@ object SymlinkTextInputFormatUtil {
       symlinkDir: Path): Seq[Path] = {
 
     val symlinks = fileSystem.listStatus(symlinkDir, new PathFilter() {
-      override def accept(p: Path): Boolean = {
-        val name = p.getName
-        !name.startsWith("_") && !name.startsWith(".")
-      }
+      override def accept(p: Path): Boolean = DataSourceUtils.isDataPath(p)
     })
 
     symlinks.flatMap {
@@ -53,6 +57,8 @@ object SymlinkTextInputFormatUtil {
           reader.close()
           Seq.empty
         }
+      case fileStatus if fileStatus.isDirectory =>
+        getTargetPathsFromSymlink(fileSystem, fileStatus.getPath)
       case _ =>
         Seq.empty
     }
